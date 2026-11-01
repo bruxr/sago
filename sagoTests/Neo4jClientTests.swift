@@ -48,4 +48,42 @@ struct Neo4jClientTests {
         let values = try JSONDecoder().decode([JSONValue].self, from: Data(json.utf8)).map(\.propertyValue)
         #expect(values == [.bool(true), .int(42), .double(1.5), .string("x"), .list([.int(1), .string("a")]), nil])
     }
+
+    @Test func decodesGraphResults() throws {
+        let json = #"""
+        {"results":[{"columns":["a","r","b"],
+          "data":[
+            {"row":[{},{},{}],"graph":{
+              "nodes":[{"id":"1","labels":["Person"],"properties":{"name":"Keanu","born":1964}},
+                       {"id":"2","labels":["Movie"],"properties":{"title":"The Matrix"}}],
+              "relationships":[{"id":"10","type":"ACTED_IN","startNode":"1","endNode":"2","properties":{"roles":["Neo"]}},
+                               {"id":"11","type":"DIRECTED","startNode":"3","endNode":"2","properties":{}}]}},
+            {"row":[{},{},{}],"graph":{
+              "nodes":[{"id":"1","labels":["Person"],"properties":{"name":"Keanu","born":1964}}],
+              "relationships":[{"id":"10","type":"ACTED_IN","startNode":"1","endNode":"2","properties":{"roles":["Neo"]}}]}}],
+          "stats":{"contains_updates":false,"nodes_created":0}}],
+         "errors":[]}
+        """#
+        let result = Neo4jClient.userQueryResult(from: try Neo4jClient.decodeResponse(Data(json.utf8)))
+        #expect(result.rowCount == 2)
+        #expect(!result.containsUpdates)
+        #expect(result.nodes.map(\.id) == [1, 2])
+        #expect(result.nodes.first?.properties == ["name": .string("Keanu"), "born": .int(1964)])
+        // Duplicate dropped; relationship to the missing node 3 dropped.
+        #expect(result.relationships.map(\.id) == [10])
+        #expect(result.relationships.first?.properties == ["roles": .list([.string("Neo")])])
+    }
+
+    @Test func decodesUpdateStats() throws {
+        let json = #"{"results":[{"columns":[],"data":[],"stats":{"contains_updates":true}}],"errors":[]}"#
+        let result = Neo4jClient.userQueryResult(from: try Neo4jClient.decodeResponse(Data(json.utf8)))
+        #expect(result.rowCount == 0)
+        #expect(result.containsUpdates)
+        #expect(GraphStore.status(for: result) == .succeeded)
+    }
+
+    @Test func classifiesQueryStatus() {
+        #expect(GraphStore.status(for: .init(rowCount: 3)) == .succeeded)
+        #expect(GraphStore.status(for: .init()) == .empty)
+    }
 }

@@ -19,6 +19,18 @@ final class GraphStore {
     var relationshipCount: Int?
     var isLoadingGraph = false
     var loadError: String?
+    /// The user query in progress; only one runs at a time.
+    private(set) var runningQuery: String?
+    /// The last failed user query, shown in an alert.
+    var queryError: QueryFailure?
+
+    var isRunningQuery: Bool { runningQuery != nil }
+
+    struct QueryFailure: Identifiable {
+        let id = UUID()
+        let cypher: String
+        let message: String
+    }
 
     private let credentials: Credentials?
     /// Properties fetched so far, keyed by element.
@@ -63,7 +75,49 @@ final class GraphStore {
 
     private func report(_ error: Error) {
         guard !(error is CancellationError) else { return }
-        loadError = (error as? AuthError)?.message ?? error.localizedDescription
+        loadError = Self.message(for: error)
+    }
+
+    private static func message(for error: Error) -> String {
+        (error as? AuthError)?.message ?? error.localizedDescription
+    }
+
+    /// Runs a user query, replacing the canvas with the graph it returns (if any).
+    /// Returns its outcome, or `nil` if another query is running or it was cancelled.
+    func run(_ cypher: String) async -> (status: QueryStatus, errorMessage: String?)? {
+        guard let credentials, !isRunningQuery else { return nil }
+        runningQuery = cypher
+        defer { runningQuery = nil }
+        do {
+            let result = try await Neo4jClient.runQuery(cypher, credentials: credentials)
+            if !result.nodes.isEmpty { show(result) }
+            return (Self.status(for: result), nil)
+        } catch is CancellationError {
+            return nil
+        } catch {
+            let message = Self.message(for: error)
+            queryError = QueryFailure(cypher: cypher, message: message)
+            return (.failed, message)
+        }
+    }
+
+    /// Succeeded when the query returned rows or changed the database; empty otherwise.
+    static func status(for result: Neo4jClient.UserQueryResult) -> QueryStatus {
+        result.rowCount > 0 || result.containsUpdates ? .succeeded : .empty
+    }
+
+    private func show(_ result: Neo4jClient.UserQueryResult) {
+        let nodes = Array(result.nodes.prefix(Self.limit))
+        let ids = Set(nodes.map(\.id))
+        let relationships = Array(result.relationships
+            .filter { ids.contains($0.startNodeID) && ids.contains($0.endNodeID) }
+            .prefix(Self.limit))
+        // Query results carry every property, so the inspector needs no extra fetch.
+        details = [:]
+        for node in nodes { details[.node(node.id)] = node.properties }
+        for relationship in relationships { details[.relationship(relationship.id)] = relationship.properties }
+        self.nodes = nodes
+        self.relationships = relationships
     }
 
     /// The properties of the selected element, fetched from the server the first time.

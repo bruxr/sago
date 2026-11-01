@@ -117,14 +117,55 @@ enum Neo4jClient {
         return object.compactMapValues(\.propertyValue)
     }
 
+    /// What a user query returned: the graph elements in its results plus enough to judge its outcome.
+    struct UserQueryResult {
+        var nodes: [GraphNode] = []
+        var relationships: [GraphRelationship] = []
+        var rowCount = 0
+        var containsUpdates = false
+    }
+
+    /// Runs a cypher query typed by the user, collecting every node and relationship it returns.
+    static func runQuery(_ cypher: String, credentials: Credentials) async throws -> UserQueryResult {
+        var statement = Statement(cypher)
+        statement.resultDataContents = ["row", "graph"]
+        statement.includeStats = true
+        return userQueryResult(from: try await run([statement], credentials: credentials))
+    }
+
+    /// Merges the per-row graphs, dropping duplicates and relationships whose ends are missing.
+    static func userQueryResult(from results: [QueryResult]) -> UserQueryResult {
+        var result = UserQueryResult()
+        var nodeIDs = Set<Int>()
+        var relationshipIDs = Set<Int>()
+        var relationships: [GraphRelationship] = []
+        for queryResult in results {
+            result.rowCount += queryResult.rows.count
+            result.containsUpdates = result.containsUpdates || queryResult.containsUpdates
+            for graph in queryResult.graphs {
+                for node in graph.nodes where nodeIDs.insert(node.id).inserted {
+                    result.nodes.append(node)
+                }
+                for relationship in graph.relationships where relationshipIDs.insert(relationship.id).inserted {
+                    relationships.append(relationship)
+                }
+            }
+        }
+        result.relationships = relationships.filter {
+            nodeIDs.contains($0.startNodeID) && nodeIDs.contains($0.endNodeID)
+        }
+        return result
+    }
+
     // MARK: - Transport
 
     /// A cypher statement with its parameters.
     struct Statement: Encodable {
         let statement: String
         var parameters: [String: JSONValue] = [:]
-        /// Plain rows only; the graph format would ship every property of every element.
-        let resultDataContents = ["row"]
+        /// Plain rows by default; the graph format ships every property of every element.
+        var resultDataContents = ["row"]
+        var includeStats = false
 
         init(_ statement: String, parameters: [String: JSONValue] = [:]) {
             self.statement = statement
@@ -132,18 +173,69 @@ enum Neo4jClient {
         }
     }
 
-    /// The rows returned by one statement.
+    /// The rows returned by one statement, plus their graphs and stats when requested.
     struct QueryResult: Decodable {
         let columns: [String]
         let rows: [[JSONValue]]
+        /// One per row when the `graph` format was requested.
+        let graphs: [Graph]
+        let containsUpdates: Bool
 
-        private enum CodingKeys: String, CodingKey { case columns, data }
-        private struct Row: Decodable { let row: [JSONValue] }
+        private enum CodingKeys: String, CodingKey { case columns, data, stats }
+        private struct Row: Decodable {
+            let row: [JSONValue]
+            let graph: Graph?
+        }
+        private struct Stats: Decodable {
+            let containsUpdates: Bool
+            private enum CodingKeys: String, CodingKey { case containsUpdates = "contains_updates" }
+        }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             columns = try container.decode([String].self, forKey: .columns)
-            rows = try container.decode([Row].self, forKey: .data).map(\.row)
+            let data = try container.decode([Row].self, forKey: .data)
+            rows = data.map(\.row)
+            graphs = data.compactMap(\.graph)
+            containsUpdates = try container.decodeIfPresent(Stats.self, forKey: .stats)?.containsUpdates ?? false
+        }
+    }
+
+    /// The nodes and relationships referenced by one row, in the HTTP API's graph format (ids are strings).
+    struct Graph: Decodable {
+        let nodes: [GraphNode]
+        let relationships: [GraphRelationship]
+
+        private enum CodingKeys: String, CodingKey { case nodes, relationships }
+        private struct Node: Decodable {
+            let id: String
+            let labels: [String]
+            let properties: [String: JSONValue]
+        }
+        private struct Relationship: Decodable {
+            let id: String
+            let type: String
+            let startNode: String
+            let endNode: String
+            let properties: [String: JSONValue]
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            nodes = try container.decode([Node].self, forKey: .nodes).compactMap { node in
+                guard let id = Int(node.id) else { return nil }
+                return GraphNode(id: id, labels: node.labels, properties: node.properties.compactMapValues(\.propertyValue))
+            }
+            relationships = try container.decode([Relationship].self, forKey: .relationships).compactMap { relationship in
+                guard let id = Int(relationship.id),
+                      let start = Int(relationship.startNode),
+                      let end = Int(relationship.endNode)
+                else { return nil }
+                return GraphRelationship(
+                    id: id, type: relationship.type, startNodeID: start, endNodeID: end,
+                    properties: relationship.properties.compactMapValues(\.propertyValue)
+                )
+            }
         }
     }
 

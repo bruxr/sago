@@ -8,12 +8,23 @@ import SwiftUI
 /// Center banner pill showing the current server, database and user.
 struct ConnectionPill: View {
     let connection: ConnectionInfo
+    /// Shows a spinner in place of the status dot while a query runs.
+    var isBusy = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(.green)
-                .frame(width: 7, height: 7)
+            Group {
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel("Query running")
+                } else {
+                    Circle()
+                        .fill(.green)
+                        .frame(width: 7, height: 7)
+                }
+            }
+            .frame(width: 12, height: 12)
 
             Text(connection.uri)
                 .fontWeight(.medium)
@@ -47,6 +58,9 @@ struct ConnectionPill: View {
 }
 
 #Preview {
-    ConnectionPill(connection: PlaceholderData.connection)
-        .padding()
+    VStack {
+        ConnectionPill(connection: PlaceholderData.connection)
+        ConnectionPill(connection: PlaceholderData.connection, isBusy: true)
+    }
+    .padding()
 }

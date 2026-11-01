@@ -3,6 +3,7 @@
 //  sago
 //
 
+import SwiftData
 import SwiftUI
 
 /// Main database view: a full-window graph canvas with floating left/right panels on top.
@@ -15,7 +16,7 @@ struct DatabaseView: View {
     let connection: ConnectionInfo
     @State private var graph: GraphStore
     var onLogout: () -> Void = {}
-    private let recentQueries = PlaceholderData.recentQueries
+    @Environment(\.modelContext) private var modelContext
 
     private let leftPanelWidth: CGFloat = 260
     private let rightPanelWidth: CGFloat = 300
@@ -60,6 +61,11 @@ struct DatabaseView: View {
                     withAnimation(panelAnimation) { showRightPanel = true }
                 }
             }
+            .alert("Query Failed", isPresented: isShowingQueryError, presenting: graph.queryError) { _ in
+                Button("OK") {}
+            } message: { failure in
+                Text(failure.message)
+            }
             .toolbar { toolbarContent }
             #if os(macOS)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
@@ -70,6 +76,30 @@ struct DatabaseView: View {
         }
     }
 
+    // MARK: - Queries
+
+    private var isShowingQueryError: Binding<Bool> {
+        Binding(
+            get: { graph.queryError != nil },
+            set: { if !$0 { graph.queryError = nil } }
+        )
+    }
+
+    /// Runs a user query and records its outcome in this server's history.
+    private func runQuery(_ cypher: String) {
+        guard !graph.isRunningQuery else { return }
+        Task {
+            guard let outcome = await graph.run(cypher) else { return }
+            try? QueryRecord.record(
+                cypher,
+                server: connection.uri,
+                status: outcome.status,
+                errorMessage: outcome.errorMessage,
+                in: modelContext
+            )
+        }
+    }
+
     // MARK: - Floating panels
 
     private var panels: some View {
@@ -77,7 +107,7 @@ struct DatabaseView: View {
             HStack(spacing: 0) {
                 if showLeftPanel {
                     FloatingPanel(width: leftPanelWidth) {
-                        RecentQueriesView(queries: recentQueries)
+                        RecentQueriesView(server: connection.uri, runningQuery: graph.runningQuery, onRun: runQuery)
                     }
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 }
@@ -141,7 +171,7 @@ struct DatabaseView: View {
         .sharedBackgroundVisibility(.hidden)
 
         ToolbarItem(placement: .principal) {
-            ConnectionPill(connection: connection)
+            ConnectionPill(connection: connection, isBusy: graph.isRunningQuery)
         }
 
         ToolbarSpacer(.fixed, placement: .principal)
@@ -153,8 +183,9 @@ struct DatabaseView: View {
                 Label("New Query", systemImage: "chevron.left.forwardslash.chevron.right")
             }
             .help("New Cypher Query")
+            .disabled(graph.isRunningQuery)
             .popover(isPresented: $showQueryPopover, arrowEdge: .bottom) {
-                QueryPopover(connection: connection)
+                QueryPopover(connection: connection, onRun: runQuery)
             }
         }
 
@@ -172,4 +203,5 @@ struct DatabaseView: View {
 #Preview {
     DatabaseView(connection: PlaceholderData.connection, graph: .preview)
         .frame(minWidth: 1100, minHeight: 700)
+        .modelContainer(PlaceholderData.previewContainer)
 }

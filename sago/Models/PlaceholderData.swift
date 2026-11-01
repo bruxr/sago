@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import SwiftData
 
 /// Static sample data used until the app talks to a real server.
 enum PlaceholderData {
@@ -13,16 +14,26 @@ enum PlaceholderData {
         user: "neo4j"
     )
 
-    static let recentQueries: [RecentQuery] = {
+    /// In-memory store seeded with sample query history for `connection`.
+    @MainActor static let previewContainer: ModelContainer = {
+        let container: ModelContainer
+        do {
+            container = try ModelContainer(for: QueryRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        } catch {
+            fatalError("Could not create preview ModelContainer: \(error)")
+        }
         let now = Date()
-        return [
-            RecentQuery(cypher: "MATCH (p:Person)-[r]->(m:Movie) RETURN p, r, m LIMIT 25", date: now.addingTimeInterval(-45)),
-            RecentQuery(cypher: "MATCH (m:Movie {title: 'The Matrix'})<-[:ACTED_IN]-(a) RETURN m, a", date: now.addingTimeInterval(-60 * 12)),
-            RecentQuery(cypher: "MATCH (p:Person) WHERE p.born > 1960 RETURN p ORDER BY p.born", date: now.addingTimeInterval(-60 * 60 * 2)),
-            RecentQuery(cypher: "MATCH (n) RETURN count(n)", date: now.addingTimeInterval(-60 * 60 * 26)),
-            RecentQuery(cypher: "MATCH (d:Person)-[:DIRECTED]->(m:Movie) RETURN d.name, collect(m.title) AS movies", date: now.addingTimeInterval(-60 * 60 * 24 * 3)),
-            RecentQuery(cypher: "CREATE INDEX person_name IF NOT EXISTS FOR (p:Person) ON (p.name)", date: now.addingTimeInterval(-60 * 60 * 24 * 9)),
+        let server = connection.uri
+        let records = [
+            QueryRecord(cypher: "MATCH (p:Person)-[r]->(m:Movie) RETURN p, r, m LIMIT 25", date: now.addingTimeInterval(-45), server: server, status: .succeeded),
+            QueryRecord(cypher: "MATCH (m:Movie {title: 'The Matrix'})<-[:ACTED_IN]-(a) RETURN m, a", date: now.addingTimeInterval(-60 * 12), server: server, status: .empty),
+            QueryRecord(cypher: "MATCH (p:Person) WHERE p.born > 1960 RETRUN p ORDER BY p.born", date: now.addingTimeInterval(-60 * 60 * 2), server: server, status: .failed, errorMessage: "Invalid input 'RETRUN'"),
+            QueryRecord(cypher: "MATCH (n) RETURN count(n)", date: now.addingTimeInterval(-60 * 60 * 26), server: server, status: .succeeded),
+            QueryRecord(cypher: "MATCH (d:Person)-[:DIRECTED]->(m:Movie) RETURN d.name, collect(m.title) AS movies", date: now.addingTimeInterval(-60 * 60 * 24 * 3), server: server, status: .succeeded),
+            QueryRecord(cypher: "CREATE INDEX person_name IF NOT EXISTS FOR (p:Person) ON (p.name)", date: now.addingTimeInterval(-60 * 60 * 24 * 9), server: server, status: .succeeded),
         ]
+        for record in records { container.mainContext.insert(record) }
+        return container
     }()
 
     private static func date(_ year: Int, _ month: Int, _ day: Int, _ hour: Int = 0, _ minute: Int = 0) -> Date {

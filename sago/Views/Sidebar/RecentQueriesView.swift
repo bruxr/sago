@@ -3,11 +3,23 @@
 //  sago
 //
 
+import SwiftData
 import SwiftUI
 
-/// Left panel listing recently sent cypher queries.
+/// Left panel listing the queries recently sent to the current server.
 struct RecentQueriesView: View {
-    let queries: [RecentQuery]
+    /// The query in progress, shown above the history.
+    let runningQuery: String?
+    /// Runs a query again; ignored while another one is running.
+    let onRun: (String) -> Void
+
+    @Query private var records: [QueryRecord]
+
+    init(server: String, runningQuery: String?, onRun: @escaping (String) -> Void) {
+        self.runningQuery = runningQuery
+        self.onRun = onRun
+        _records = Query(QueryRecord.history(server: server))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,38 +29,80 @@ struct RecentQueriesView: View {
                 .padding(.top, 14)
                 .padding(.bottom, 6)
 
-            // ScrollView instead of List so row insets match the title exactly on both platforms.
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(queries) { query in
-                        Button {
-                            // TODO: Send and run the query against the server.
-                        } label: {
-                            RecentQueryRow(query: query)
-                        }
-                        .buttonStyle(.plain)
+            if records.isEmpty && runningQuery == nil {
+                ContentUnavailableView {
+                    Label("No Recent Queries", systemImage: "chevron.left.forwardslash.chevron.right")
+                } description: {
+                    Text("Queries you run on this server appear here.")
+                }
+                .frame(maxHeight: .infinity)
+            } else {
+                list
+            }
+        }
+    }
 
-                        if query.id != queries.last?.id {
-                            Divider()
-                        }
+    /// The history, minus the latest entry while it is the query being re-run (it shows as the running row).
+    private var visibleRecords: ArraySlice<QueryRecord> {
+        if let runningQuery, records.first?.cypher == runningQuery {
+            records.dropFirst()
+        } else {
+            records[...]
+        }
+    }
+
+    // ScrollView instead of List so row insets match the title exactly on both platforms.
+    private var list: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if let runningQuery {
+                    RecentQueryRow(cypher: runningQuery, status: nil, date: nil)
+                    if !visibleRecords.isEmpty {
+                        Divider()
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
+
+                ForEach(visibleRecords) { record in
+                    Button {
+                        guard runningQuery == nil else { return }
+                        onRun(record.cypher)
+                    } label: {
+                        RecentQueryRow(cypher: record.cypher, status: record.status, date: record.date)
+                    }
+                    .buttonStyle(.plain)
+
+                    if record.id != visibleRecords.last?.id {
+                        Divider()
+                    }
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
         }
     }
 }
 
 private struct RecentQueryRow: View {
-    let query: RecentQuery
+    let cypher: String
+    /// `nil` while the query is running.
+    let status: QueryStatus?
+    let date: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(query.date, format: .relative(presentation: .named))
+            HStack(spacing: 6) {
+                QueryStatusIndicator(status: status)
+                Group {
+                    if let date {
+                        Text(date, format: .relative(presentation: .named))
+                    } else {
+                        Text("Running…")
+                    }
+                }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(query.cypher)
+            }
+            Text(CypherHighlighter.highlighted(cypher))
                 .font(.system(.callout, design: .monospaced))
                 .lineLimit(3)
                 .truncationMode(.tail)
@@ -61,7 +115,51 @@ private struct RecentQueryRow: View {
     }
 }
 
+/// Green, amber or red dot for a finished query; a spinner while it runs.
+private struct QueryStatusIndicator: View {
+    let status: QueryStatus?
+
+    var body: some View {
+        Group {
+            if let status {
+                Circle()
+                    .fill(color(for: status))
+                    .frame(width: 7, height: 7)
+            } else {
+                ProgressView()
+                    .controlSize(.mini)
+            }
+        }
+        .frame(width: 12, height: 12)
+        .accessibilityLabel(label)
+    }
+
+    private func color(for status: QueryStatus) -> Color {
+        switch status {
+        case .succeeded: .green
+        case .empty: .orange
+        case .failed: .red
+        }
+    }
+
+    private var label: String {
+        switch status {
+        case .succeeded: "Succeeded"
+        case .empty: "No results"
+        case .failed: "Failed"
+        case nil: "Running"
+        }
+    }
+}
+
 #Preview {
-    RecentQueriesView(queries: PlaceholderData.recentQueries)
+    RecentQueriesView(server: PlaceholderData.connection.uri, runningQuery: "MATCH (n) RETURN n LIMIT 10", onRun: { _ in })
         .frame(width: 260, height: 400)
+        .modelContainer(PlaceholderData.previewContainer)
+}
+
+#Preview("Empty") {
+    RecentQueriesView(server: "neo4j://empty", runningQuery: nil, onRun: { _ in })
+        .frame(width: 260, height: 400)
+        .modelContainer(PlaceholderData.previewContainer)
 }
