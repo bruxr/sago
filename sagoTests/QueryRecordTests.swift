@@ -34,13 +34,13 @@ struct QueryRecordTests {
         let container = try ModelContainer(for: QueryRecord.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let context = container.mainContext
 
-        try QueryRecord.record("MATCH (n) RETURN n", server: "a", status: .succeeded, errorMessage: nil, in: context)
-        try QueryRecord.record("MATCH (n) RETURN n", server: "a", status: .failed, errorMessage: "boom", in: context)
-        #expect(try context.fetch(QueryRecord.history(server: "a")).map(\.status) == [.failed])
+        try QueryRecord.record("MATCH (n) RETURN n", server: "a", status: .succeeded, in: context)
+        try QueryRecord.record("MATCH (n) RETURN n", server: "a", status: .empty, in: context)
+        #expect(try context.fetch(QueryRecord.history(server: "a")).map(\.status) == [.empty])
 
         // Only the latest entry is merged; an older duplicate is added again.
-        try QueryRecord.record("RETURN 1", server: "a", status: .succeeded, errorMessage: nil, in: context)
-        try QueryRecord.record("MATCH (n) RETURN n", server: "a", status: .empty, errorMessage: nil, in: context)
+        try QueryRecord.record("RETURN 1", server: "a", status: .succeeded, in: context)
+        try QueryRecord.record("MATCH (n) RETURN n", server: "a", status: .empty, in: context)
         #expect(try context.fetch(QueryRecord.history(server: "a")).map(\.cypher) == ["MATCH (n) RETURN n", "RETURN 1", "MATCH (n) RETURN n"])
     }
 }

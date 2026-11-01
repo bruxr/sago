@@ -27,7 +27,6 @@ enum PlaceholderData {
         let records = [
             QueryRecord(cypher: "MATCH (p:Person)-[r]->(m:Movie) RETURN p, r, m LIMIT 25", date: now.addingTimeInterval(-45), server: server, status: .succeeded),
             QueryRecord(cypher: "MATCH (m:Movie {title: 'The Matrix'})<-[:ACTED_IN]-(a) RETURN m, a", date: now.addingTimeInterval(-60 * 12), server: server, status: .empty),
-            QueryRecord(cypher: "MATCH (p:Person) WHERE p.born > 1960 RETRUN p ORDER BY p.born", date: now.addingTimeInterval(-60 * 60 * 2), server: server, status: .failed, errorMessage: "Invalid input 'RETRUN'"),
             QueryRecord(cypher: "MATCH (n) RETURN count(n)", date: now.addingTimeInterval(-60 * 60 * 26), server: server, status: .succeeded),
             QueryRecord(cypher: "MATCH (d:Person)-[:DIRECTED]->(m:Movie) RETURN d.name, collect(m.title) AS movies", date: now.addingTimeInterval(-60 * 60 * 24 * 3), server: server, status: .succeeded),
             QueryRecord(cypher: "CREATE INDEX person_name IF NOT EXISTS FOR (p:Person) ON (p.name)", date: now.addingTimeInterval(-60 * 60 * 24 * 9), server: server, status: .succeeded),

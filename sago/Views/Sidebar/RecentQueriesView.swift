@@ -156,7 +156,7 @@ private struct RecentQueryRow: View {
     }
 }
 
-/// Green, amber or red dot for a finished query; a spinner while it runs.
+/// Green or amber dot for a finished query; a spinner while it runs.
 private struct QueryStatusIndicator: View {
     let status: QueryStatus?
 
@@ -179,7 +179,6 @@ private struct QueryStatusIndicator: View {
         switch status {
         case .succeeded: .green
         case .empty: .orange
-        case .failed: .red
         }
     }
 
@@ -187,7 +186,6 @@ private struct QueryStatusIndicator: View {
         switch status {
         case .succeeded: "Succeeded"
         case .empty: "No results"
-        case .failed: "Failed"
         case nil: "Running"
         }
     }

@@ -26,7 +26,7 @@ final class GraphStore {
 
     var isRunningQuery: Bool { runningQuery != nil }
 
-    struct QueryFailure: Identifiable {
+    struct QueryFailure: Identifiable, Error {
         let id = UUID()
         let cypher: String
         let message: String
@@ -84,20 +84,18 @@ final class GraphStore {
 
     /// Runs a user query, replacing the canvas with the graph it returns (if any).
     /// Returns its outcome, or `nil` if another query is running or it was cancelled.
-    func run(_ cypher: String) async -> (status: QueryStatus, errorMessage: String?)? {
+    func run(_ cypher: String) async -> Result<QueryStatus, QueryFailure>? {
         guard let credentials, !isRunningQuery else { return nil }
         runningQuery = cypher
         defer { runningQuery = nil }
         do {
             let result = try await Neo4jClient.runQuery(cypher, credentials: credentials)
             if !result.nodes.isEmpty { show(result) }
-            return (Self.status(for: result), nil)
+            return .success(Self.status(for: result))
         } catch is CancellationError {
             return nil
         } catch {
-            let message = Self.message(for: error)
-            queryError = QueryFailure(cypher: cypher, message: message)
-            return (.failed, message)
+            return .failure(QueryFailure(cypher: cypher, message: Self.message(for: error)))
         }
     }
 

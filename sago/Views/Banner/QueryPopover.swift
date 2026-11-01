@@ -8,11 +8,15 @@ import SwiftUI
 /// Popover for composing and sending a cypher query.
 struct QueryPopover: View {
     let connection: ConnectionInfo
-    let onRun: (String) -> Void
+    /// Whether a query is running; the popover can't be run again or closed meanwhile.
+    let isRunning: Bool
+    /// Runs the query, returning the error message if it failed.
+    let onRun: (String) async -> String?
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = AttributedString()
     @State private var selection = AttributedTextSelection()
+    @State private var errorMessage: String?
     @FocusState private var isEditorFocused: Bool
 
     private var plainQuery: String {
@@ -42,10 +46,18 @@ struct QueryPopover: View {
                     .onChange(of: plainQuery) {
                         // Recolor without touching the characters, keeping the selection in place.
                         query.transform(updating: &selection) { CypherHighlighter.highlight(&$0) }
+                        errorMessage = nil
                     }
             }
             .font(.system(.body, design: .monospaced))
             .frame(minHeight: 90)
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
 
             HStack(spacing: 8) {
                 Label(connection.database, systemImage: "cylinder.split.1x2")
@@ -58,28 +70,45 @@ struct QueryPopover: View {
                 Spacer()
 
                 Button {
-                    onRun(trimmedQuery)
-                    query = AttributedString()
-                    selection = AttributedTextSelection()
-                    dismiss()
+                    Task { await run() }
                 } label: {
-                    Image(systemName: "arrow.up")
-                        .fontWeight(.semibold)
-                        .frame(width: 22, height: 22)
+                    Group {
+                        if isRunning {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.up")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.circle)
-                .disabled(trimmedQuery.isEmpty)
+                .disabled(trimmedQuery.isEmpty || isRunning)
                 .keyboardShortcut(.return, modifiers: .command)
                 .accessibilityLabel("Run Query")
             }
         }
         .padding(14)
         .frame(width: 440)
+        .interactiveDismissDisabled(isRunning)
         .onAppear { isEditorFocused = true }
+    }
+
+    /// Runs the query; closes on success, otherwise keeps it for editing and shows the error.
+    private func run() async {
+        errorMessage = nil
+        if let message = await onRun(trimmedQuery) {
+            errorMessage = message
+        } else {
+            query = AttributedString()
+            selection = AttributedTextSelection()
+            dismiss()
+        }
     }
 }
 
 #Preview {
-    QueryPopover(connection: PlaceholderData.connection, onRun: { _ in })
+    QueryPopover(connection: PlaceholderData.connection, isRunning: false, onRun: { _ in nil })
 }

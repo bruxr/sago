@@ -11,7 +11,6 @@ enum QueryStatus: String, Codable {
     case succeeded
     /// Succeeded but returned no rows and changed nothing.
     case empty
-    case failed
 }
 
 /// A cypher query previously sent to a server, kept across launches.
@@ -25,18 +24,16 @@ final class QueryRecord {
     /// The connection uri the query was sent to.
     var server: String
     var statusRaw: String
-    var errorMessage: String?
 
     var status: QueryStatus {
-        QueryStatus(rawValue: statusRaw) ?? .failed
+        QueryStatus(rawValue: statusRaw) ?? .empty
     }
 
-    init(cypher: String, date: Date = .now, server: String, status: QueryStatus, errorMessage: String? = nil) {
+    init(cypher: String, date: Date = .now, server: String, status: QueryStatus) {
         self.cypher = cypher
         self.date = date
         self.server = server
         self.statusRaw = status.rawValue
-        self.errorMessage = errorMessage
     }
 
     /// The server's most recent queries first, limited to `historyLimit`.
@@ -49,18 +46,17 @@ final class QueryRecord {
         return descriptor
     }
 
-    /// Records a finished query. Repeating the server's latest query updates that entry instead of adding one.
+    /// Records a successful query. Repeating the server's latest query updates that entry instead of adding one.
     static func record(
-        _ cypher: String, server: String, status: QueryStatus, errorMessage: String?, in context: ModelContext
+        _ cypher: String, server: String, status: QueryStatus, in context: ModelContext
     ) throws {
         var latest = history(server: server)
         latest.fetchLimit = 1
         if let record = try context.fetch(latest).first, record.cypher == cypher {
             record.date = .now
             record.statusRaw = status.rawValue
-            record.errorMessage = errorMessage
         } else {
-            context.insert(QueryRecord(cypher: cypher, server: server, status: status, errorMessage: errorMessage))
+            context.insert(QueryRecord(cypher: cypher, server: server, status: status))
             try prune(server: server, in: context)
         }
     }

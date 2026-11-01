@@ -85,18 +85,26 @@ struct DatabaseView: View {
         )
     }
 
-    /// Runs a user query and records its outcome in this server's history.
-    private func runQuery(_ cypher: String) {
+    /// Runs a user query, recording it in this server's history if it succeeds.
+    /// Returns the error message if it failed.
+    private func runQuery(_ cypher: String) async -> String? {
+        guard let outcome = await graph.run(cypher) else { return nil }
+        switch outcome {
+        case .success(let status):
+            try? QueryRecord.record(cypher, server: connection.uri, status: status, in: modelContext)
+            return nil
+        case .failure(let failure):
+            return failure.message
+        }
+    }
+
+    /// Re-runs a query from the history, showing any error in an alert.
+    private func rerunQuery(_ cypher: String) {
         guard !graph.isRunningQuery else { return }
         Task {
-            guard let outcome = await graph.run(cypher) else { return }
-            try? QueryRecord.record(
-                cypher,
-                server: connection.uri,
-                status: outcome.status,
-                errorMessage: outcome.errorMessage,
-                in: modelContext
-            )
+            if let message = await runQuery(cypher) {
+                graph.queryError = GraphStore.QueryFailure(cypher: cypher, message: message)
+            }
         }
     }
 
@@ -107,7 +115,7 @@ struct DatabaseView: View {
             HStack(spacing: 0) {
                 if showLeftPanel {
                     FloatingPanel(width: leftPanelWidth) {
-                        RecentQueriesView(server: connection.uri, runningQuery: graph.runningQuery, onRun: runQuery)
+                        RecentQueriesView(server: connection.uri, runningQuery: graph.runningQuery, onRun: rerunQuery)
                     }
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 }
@@ -185,7 +193,7 @@ struct DatabaseView: View {
             .help("New Cypher Query")
             .disabled(graph.isRunningQuery)
             .popover(isPresented: $showQueryPopover, arrowEdge: .bottom) {
-                QueryPopover(connection: connection, onRun: runQuery)
+                QueryPopover(connection: connection, isRunning: graph.isRunningQuery, onRun: runQuery)
             }
         }
 
