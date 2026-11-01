@@ -13,10 +13,9 @@ struct DatabaseView: View {
     @State private var selection: GraphSelection?
 
     let connection: ConnectionInfo
+    @State private var graph: GraphStore
     var onLogout: () -> Void = {}
     private let recentQueries = PlaceholderData.recentQueries
-    @State private var nodes = PlaceholderData.nodes
-    private let relationships = PlaceholderData.relationships
 
     private let leftPanelWidth: CGFloat = 260
     private let rightPanelWidth: CGFloat = 300
@@ -33,19 +32,28 @@ struct DatabaseView: View {
         )
     }
 
+    init(connection: ConnectionInfo, graph: GraphStore, onLogout: @escaping () -> Void = {}) {
+        self.connection = connection
+        self._graph = State(initialValue: graph)
+        self.onLogout = onLogout
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 // Fills the whole window, including under the toolbar and panels.
                 GraphCanvasView(
-                    nodes: nodes,
-                    relationships: relationships,
+                    nodes: graph.nodes,
+                    relationships: graph.relationships,
                     obscuredInsets: obscuredInsets,
                     selection: $selection
                 )
 
+                loadingStatus
+
                 panels
             }
+            .task { await graph.load() }
             .onChange(of: selection) {
                 // Selecting something reveals its details.
                 if selection != nil && !showRightPanel {
@@ -79,13 +87,33 @@ struct DatabaseView: View {
 
                 if showRightPanel {
                     FloatingPanel(width: rightPanelWidth) {
-                        InspectorView(nodes: $nodes, relationships: relationships, selection: selection)
+                        InspectorView(graph: graph, selection: selection)
                     }
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .padding(panelPadding)
         }
+    }
+
+    /// Spinner while the graph loads, or the error if it failed. Centered in the area between the panels.
+    @ViewBuilder
+    private var loadingStatus: some View {
+        Group {
+            if graph.isLoadingGraph {
+                ProgressView("Loading graph…")
+            } else if let error = graph.loadError, graph.nodes.isEmpty {
+                ContentUnavailableView {
+                    Label("Couldn't Load Graph", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Try Again") { Task { await graph.load() } }
+                }
+            }
+        }
+        .padding(obscuredInsets)
+        .animation(panelAnimation, value: obscuredInsets)
     }
 
     // MARK: - Banner
@@ -142,6 +170,6 @@ struct DatabaseView: View {
 }
 
 #Preview {
-    DatabaseView(connection: PlaceholderData.connection)
+    DatabaseView(connection: PlaceholderData.connection, graph: .preview)
         .frame(minWidth: 1100, minHeight: 700)
 }

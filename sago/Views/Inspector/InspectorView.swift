@@ -7,20 +7,31 @@ import SwiftUI
 
 /// Right panel showing details about the current graph or the selected node / relationship.
 struct InspectorView: View {
-    @Binding var nodes: [GraphNode]
-    let relationships: [GraphRelationship]
+    @Bindable var graph: GraphStore
     let selection: GraphSelection?
+
+    /// Selection whose properties failed to load, and why.
+    @State private var failure: (selection: GraphSelection, message: String)?
+
+    /// Properties of the selected element, `nil` while they're being fetched.
+    private var properties: [String: PropertyValue]? {
+        selection.flatMap(graph.cachedProperties(for:))
+    }
+
+    private var propertiesError: String? {
+        failure?.selection == selection ? failure?.message : nil
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 switch selection {
                 case .node(let id):
-                    if let index = nodes.firstIndex(where: { $0.id == id }) {
+                    if let index = graph.nodes.firstIndex(where: { $0.id == id }) {
                         nodeDetails(index)
                     }
                 case .relationship(let id):
-                    if let relationship = relationships.first(where: { $0.id == id }) {
+                    if let relationship = graph.relationships.first(where: { $0.id == id }) {
                         relationshipDetails(relationship)
                     }
                 case nil:
@@ -32,27 +43,61 @@ struct InspectorView: View {
             // Swap content instantly. Fading text fields in/out over the glass panel renders them black mid-transition.
             .transaction(value: selection) { $0.animation = nil }
         }
+        .task(id: selection) { await loadProperties() }
+    }
+
+    /// Fetches the selected element's properties. Cancelled automatically when the selection changes.
+    /// The store caches the result, which `properties` then reads.
+    private func loadProperties() async {
+        guard let selection, graph.cachedProperties(for: selection) == nil else { return }
+        do {
+            _ = try await graph.properties(for: selection)
+        } catch is CancellationError {
+        } catch {
+            failure = (selection, (error as? AuthError)?.message ?? error.localizedDescription)
+        }
     }
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Result")
+            Text("Database")
                 .font(.headline)
             HStack(spacing: 10) {
-                statTile(title: "Nodes", count: nodes.count, systemImage: "circle.hexagongrid")
-                statTile(title: "Relationships", count: relationships.count, systemImage: "arrow.triangle.branch")
+                statTile(title: "Nodes", count: graph.nodeCount, systemImage: "circle.hexagongrid")
+                statTile(title: "Relationships", count: graph.relationshipCount, systemImage: "arrow.triangle.branch")
+            }
+            if isShowingSubset {
+                Text("Showing \(graph.nodes.count, format: .number) nodes and \(graph.relationships.count, format: .number) relationships.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    private func statTile(title: String, count: Int, systemImage: String) -> some View {
+    /// Whether the canvas shows fewer elements than the database holds.
+    private var isShowingSubset: Bool {
+        guard let nodeCount = graph.nodeCount, let relationshipCount = graph.relationshipCount else { return false }
+        return graph.nodes.count < nodeCount || graph.relationships.count < relationshipCount
+    }
+
+    private func statTile(title: String, count: Int?, systemImage: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(title, systemImage: systemImage)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(count, format: .number)
-                .font(.title2.monospacedDigit())
-                .fontWeight(.semibold)
+            Group {
+                if let count {
+                    Text(count, format: .number)
+                } else {
+                    // Keeps the tile height while the totals load.
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxHeight: .infinity, alignment: .leading)
+                }
+            }
+            .font(.title2.monospacedDigit())
+            .fontWeight(.semibold)
+            .frame(height: 28, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
@@ -60,21 +105,21 @@ struct InspectorView: View {
     }
 
     private func nodeDetails(_ index: Int) -> some View {
-        let node = nodes[index]
+        let node = graph.nodes[index]
         return VStack(alignment: .leading, spacing: 14) {
-            LabelTagsView(labels: $nodes[index].labels)
+            LabelTagsView(labels: $graph.nodes[index].labels)
                 // Fresh tag selection for each node.
                 .id(node.id)
             Text(node.caption)
                 .font(.headline)
 
-            fieldRows(id: node.id, properties: node.properties)
+            fieldRows(id: node.id)
         }
     }
 
     private func relationshipDetails(_ relationship: GraphRelationship) -> some View {
-        let start = nodes.first { $0.id == relationship.startNodeID }?.caption ?? "\(relationship.startNodeID)"
-        let end = nodes.first { $0.id == relationship.endNodeID }?.caption ?? "\(relationship.endNodeID)"
+        let start = graph.nodes.first { $0.id == relationship.startNodeID }?.caption ?? "\(relationship.startNodeID)"
+        let end = graph.nodes.first { $0.id == relationship.endNodeID }?.caption ?? "\(relationship.endNodeID)"
         return VStack(alignment: .leading, spacing: 14) {
             tag(relationship.type, color: .gray)
             HStack(spacing: 6) {
@@ -85,7 +130,7 @@ struct InspectorView: View {
             }
             .font(.headline)
 
-            fieldRows(id: relationship.id, properties: relationship.properties)
+            fieldRows(id: relationship.id)
         }
     }
 
@@ -98,9 +143,24 @@ struct InspectorView: View {
             .glassEffect(.regular.tint(color.opacity(0.5)), in: .capsule)
     }
 
-    private func fieldRows(id: Int, properties: [String: PropertyValue]) -> some View {
-        ForEach(Self.orderedFields(id: id, properties: properties), id: \.key) { field in
-            PropertyRow(key: field.key, value: field.value)
+    /// The fields once loaded; a spinner while they're being fetched.
+    @ViewBuilder
+    private func fieldRows(id: Int) -> some View {
+        if let properties {
+            ForEach(Self.orderedFields(id: id, properties: properties), id: \.key) { field in
+                PropertyRow(key: field.key, value: field.value)
+            }
+        } else if let propertiesError {
+            PropertyRow(key: "<id>", value: String(id))
+            Label(propertiesError, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            PropertyRow(key: "<id>", value: String(id))
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
         }
     }
 
@@ -167,19 +227,16 @@ struct FlowLayout: Layout {
 }
 
 #Preview("Summary") {
-    @Previewable @State var nodes = PlaceholderData.nodes
-    InspectorView(nodes: $nodes, relationships: PlaceholderData.relationships, selection: nil)
+    InspectorView(graph: .preview, selection: nil)
         .frame(width: 300, height: 500)
 }
 
 #Preview("Node") {
-    @Previewable @State var nodes = PlaceholderData.nodes
-    InspectorView(nodes: $nodes, relationships: PlaceholderData.relationships, selection: .node(10))
+    InspectorView(graph: .preview, selection: .node(10))
         .frame(width: 300, height: 600)
 }
 
 #Preview("Relationship") {
-    @Previewable @State var nodes = PlaceholderData.nodes
-    InspectorView(nodes: $nodes, relationships: PlaceholderData.relationships, selection: .relationship(100))
+    InspectorView(graph: .preview, selection: .relationship(100))
         .frame(width: 300, height: 400)
 }

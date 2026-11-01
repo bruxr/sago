@@ -20,7 +20,9 @@ struct ContentView: View {
                 LoginView(session: session)
                     .frame(minWidth: 420, minHeight: 420)
             case .connected(let connection):
-                DatabaseView(connection: connection, onLogout: session.logout)
+                if let credentials = session.savedCredentials {
+                    DatabaseView(connection: connection, graph: GraphStore(credentials: credentials), onLogout: session.logout)
+                }
             }
         }
         .task { await session.restore() }

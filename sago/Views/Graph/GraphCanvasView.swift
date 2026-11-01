@@ -146,7 +146,8 @@ struct GraphCanvasView: View {
     let obscuredInsets: EdgeInsets
     @Binding var selection: GraphSelection?
 
-    @State private var simulation: ForceSimulation
+    @State private var simulation = ForceSimulation()
+    @State private var isLayingOut = false
     @State private var camera = GraphCamera()
     @State private var labelSizes = LabelSizeCache()
     @State private var isAnimating = true
@@ -167,7 +168,6 @@ struct GraphCanvasView: View {
         self.relationships = relationships
         self.obscuredInsets = obscuredInsets
         self._selection = selection
-        self._simulation = State(initialValue: ForceSimulation(nodes: nodes, relationships: relationships))
     }
 
     var body: some View {
@@ -209,9 +209,15 @@ struct GraphCanvasView: View {
                     .padding(.bottom, 12)
             }
         }
+        .overlay {
+            if isLayingOut {
+                ProgressView("Laying out graph…")
+                    .padding(obscuredInsets)
+            }
+        }
         // Only a new set of nodes needs a fresh layout; label edits just redraw.
-        .onChange(of: nodes.map(\.id)) { reload() }
-        .onChange(of: relationships) { reload() }
+        // A newer graph cancels a layout still in progress.
+        .task(id: LayoutInput(nodeIDs: nodes.map(\.id), relationships: relationships)) { await reload() }
         .onChange(of: obscuredInsets) { wake() }
         .onChange(of: selection) { wake() }
         #if os(macOS)
@@ -242,8 +248,11 @@ struct GraphCanvasView: View {
     }
 
     /// Lays out a new set of nodes and relationships and plays the intro animation.
-    private func reload() {
-        simulation.load(nodes: nodes, relationships: relationships)
+    private func reload() async {
+        isLayingOut = true
+        await simulation.load(nodes: nodes, relationships: relationships)
+        guard !Task.isCancelled else { return }
+        isLayingOut = false
         labelSizes.sizes = [:]
         camera.showNewGraph()
         isAnimating = true
@@ -571,4 +580,10 @@ private extension Color {
         selection: .constant(.node(4))
     )
     .frame(width: 800, height: 600)
+}
+
+/// What the layout depends on; a change triggers a fresh layout.
+private struct LayoutInput: Equatable {
+    let nodeIDs: [Int]
+    let relationships: [GraphRelationship]
 }
