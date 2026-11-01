@@ -14,6 +14,7 @@ struct RecentQueriesView: View {
     let onRun: (String) -> Void
 
     @Query private var records: [QueryRecord]
+    @Environment(\.modelContext) private var modelContext
     /// A write or delete query awaiting confirmation before it runs.
     @State private var pendingQuery: PendingQuery?
 
@@ -66,17 +67,24 @@ struct RecentQueriesView: View {
 
                 ForEach(visibleRecords) { record in
                     Button {
-                        guard runningQuery == nil else { return }
-                        let effect = CypherHighlighter.effect(of: record.cypher)
-                        if effect == .read {
-                            onRun(record.cypher)
-                        } else {
-                            pendingQuery = PendingQuery(cypher: record.cypher, effect: effect)
-                        }
+                        run(record)
                     } label: {
                         RecentQueryRow(cypher: record.cypher, status: record.status, date: record.date)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        Button("Run Query", systemImage: "play") {
+                            run(record)
+                        }
+                        .disabled(runningQuery != nil)
+                        Button("Copy Query", systemImage: "doc.on.doc") {
+                            copy(record.cypher)
+                        }
+                        Divider()
+                        Button("Remove from History", systemImage: "trash", role: .destructive) {
+                            modelContext.delete(record)
+                        }
+                    }
 
                     if record.id != visibleRecords.last?.id {
                         Divider()
@@ -98,6 +106,26 @@ struct RecentQueriesView: View {
         } message: { query in
             Text(query.message)
         }
+    }
+
+    /// Runs a history entry, asking for confirmation first if it changes data.
+    private func run(_ record: QueryRecord) {
+        guard runningQuery == nil else { return }
+        let effect = CypherHighlighter.effect(of: record.cypher)
+        if effect == .read {
+            onRun(record.cypher)
+        } else {
+            pendingQuery = PendingQuery(cypher: record.cypher, effect: effect)
+        }
+    }
+
+    private func copy(_ cypher: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cypher, forType: .string)
+        #else
+        UIPasteboard.general.string = cypher
+        #endif
     }
 }
 
