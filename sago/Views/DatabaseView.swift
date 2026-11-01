@@ -12,7 +12,8 @@ struct DatabaseView: View {
     @State private var showQueryPopover = false
     @State private var selection: GraphSelection?
 
-    private let connection = PlaceholderData.connection
+    let connection: ConnectionInfo
+    var onLogout: () -> Void = {}
     private let recentQueries = PlaceholderData.recentQueries
     @State private var nodes = PlaceholderData.nodes
     private let relationships = PlaceholderData.relationships
@@ -100,6 +101,17 @@ struct DatabaseView: View {
             .help(showLeftPanel ? "Hide Recent Queries" : "Show Recent Queries")
         }
 
+        // Hidden shared background puts the button in its own group; it draws its own glass instead.
+        ToolbarItem(placement: .navigation) {
+            Button(action: onLogout) {
+                Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .help("Log Out")
+        }
+        .sharedBackgroundVisibility(.hidden)
+
         ToolbarItem(placement: .principal) {
             ConnectionPill(connection: connection)
         }
@@ -130,6 +142,6 @@ struct DatabaseView: View {
 }
 
 #Preview {
-    DatabaseView()
+    DatabaseView(connection: PlaceholderData.connection)
         .frame(minWidth: 1100, minHeight: 700)
 }
