@@ -15,6 +15,8 @@ final class ForceSimulation {
     private var velocities: [Int: CGVector] = [:]
     private var nodeIDs: [Int] = []
     private var edges: [(Int, Int)] = []
+    /// Nodes placed by the user. They keep their position and are not moved by forces.
+    private var pinned: Set<Int> = []
 
     private(set) var isSettled = false
     private var lastDate: Date?
@@ -26,8 +28,8 @@ final class ForceSimulation {
     private let springLength: CGFloat = 130
     private let springStiffness: CGFloat = 0.04
     private let gravity: CGFloat = 0.012
-    /// Velocity retained each step. Slightly under-damped so nodes overshoot and bounce.
-    private let friction: CGFloat = 0.86
+    /// Velocity retained each step. Damped enough that nodes glide into place without bouncing.
+    private let friction: CGFloat = 0.8
     private let stepInterval: TimeInterval = 1.0 / 60.0
     private let maxSteps = 1800
 
@@ -35,8 +37,8 @@ final class ForceSimulation {
         load(nodes: nodes, relationships: relationships)
     }
 
-    /// Replaces the graph and restarts the layout with all nodes bunched at the center,
-    /// so they "bloom" outward.
+    /// Replaces the graph and computes its settled layout up front, so it can be shown
+    /// in its final arrangement instead of animating into place.
     func load(nodes: [GraphNode], relationships: [GraphRelationship]) {
         nodeIDs = nodes.map(\.id)
         let known = Set(nodeIDs)
@@ -46,6 +48,7 @@ final class ForceSimulation {
 
         positions = [:]
         velocities = [:]
+        pinned = []
         for (index, id) in nodeIDs.enumerated() {
             // Phyllotaxis spiral gives a deterministic, evenly spread starting cluster.
             let angle = Double(index) * 2.399963
@@ -53,15 +56,35 @@ final class ForceSimulation {
             positions[id] = CGPoint(x: cos(angle) * radius, y: sin(angle) * radius)
             velocities[id] = .zero
         }
+
+        // Run the layout to completion now.
+        stepCount = 0
+        while stepCount < maxSteps && !isSettledNow() {
+            step()
+        }
+        isSettled = true
+        lastDate = nil
+        accumulator = 0
+    }
+
+    /// Moves a node to `point` and pins it there; the rest of the graph reacts to the new position.
+    func move(_ id: Int, to point: CGPoint) {
+        guard positions[id] != nil else { return }
+        positions[id] = point
+        velocities[id] = .zero
+        pinned.insert(id)
         reheat()
     }
 
     /// Wakes the simulation so it continues to animate.
     func reheat() {
+        if isSettled {
+            // Start a fresh clock; keep it running if the simulation is already active.
+            lastDate = nil
+            accumulator = 0
+        }
         isSettled = false
         stepCount = 0
-        lastDate = nil
-        accumulator = 0
     }
 
     /// Advances the simulation up to `date`.
@@ -70,6 +93,7 @@ final class ForceSimulation {
         defer { lastDate = date }
         guard let lastDate else {
             step()
+            isSettled = isSettledNow()
             return
         }
 
@@ -78,8 +102,15 @@ final class ForceSimulation {
         while accumulator >= stepInterval {
             step()
             accumulator -= stepInterval
+            isSettled = isSettledNow()
             if isSettled { break }
         }
+    }
+
+    private var lastMaxSpeed: CGFloat = .infinity
+
+    private func isSettledNow() -> Bool {
+        (stepCount > 60 && lastMaxSpeed < 0.02) || stepCount >= maxSteps
     }
 
     private func step() {
@@ -126,7 +157,7 @@ final class ForceSimulation {
 
         // Integrate.
         var maxSpeed: CGFloat = 0
-        for id in nodeIDs {
+        for id in nodeIDs where !pinned.contains(id) {
             guard var position = positions[id], var velocity = velocities[id], let force = forces[id] else { continue }
             velocity.dx = (velocity.dx + force.dx - position.x * gravity) * friction
             velocity.dy = (velocity.dy + force.dy - position.y * gravity) * friction
@@ -138,9 +169,7 @@ final class ForceSimulation {
         }
 
         stepCount += 1
-        if (stepCount > 60 && maxSpeed < 0.02) || stepCount >= maxSteps {
-            isSettled = true
-        }
+        lastMaxSpeed = maxSpeed
     }
 
     /// Bounding box of all node centers, in world coordinates.

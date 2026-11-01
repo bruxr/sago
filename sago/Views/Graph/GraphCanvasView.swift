@@ -33,8 +33,48 @@ final class GraphCamera {
 
     private var lastDate: Date?
     private var hasPlacedInitially = false
+    private var needsIntro = true
+    private var introStart: Date?
 
     static let scaleRange: ClosedRange<CGFloat> = 0.1...6
+    /// Critically damped (no bounce): moves quickly at first, then settles smoothly.
+    private static let introSpring = Spring(duration: 0.75, bounce: 0)
+    private static let introStartScale: CGFloat = 1.2
+    private static let introFadeDuration: TimeInterval = 0.2
+
+    var isPlayingIntro: Bool { needsIntro || introStart != nil }
+
+    /// Frames a newly loaded graph immediately and replays the intro zoom.
+    func showNewGraph() {
+        isAutoFitting = true
+        hasPlacedInitially = false
+        needsIntro = true
+        introStart = nil
+        resetClock()
+    }
+
+    /// Extra scale (1.2 → 1) and opacity (0 → 1) applied while a new graph appears.
+    func intro(at date: Date) -> (scale: CGFloat, opacity: Double) {
+        if needsIntro {
+            introStart = date
+            needsIntro = false
+        }
+        guard let introStart else { return (1, 1) }
+        let time = date.timeIntervalSince(introStart)
+        let scale = Self.introSpring.value(
+            fromValue: Double(Self.introStartScale),
+            toValue: 1,
+            initialVelocity: 0,
+            time: time
+        )
+        let opacity = min(time / Self.introFadeDuration, 1)
+        // The spring approaches 1 asymptotically; stop once the difference is invisible.
+        if abs(scale - 1) < 0.0005 {
+            self.introStart = nil
+            return (1, 1)
+        }
+        return (CGFloat(scale), opacity)
+    }
 
     func toWorld(_ point: CGPoint) -> CGPoint {
         CGPoint(x: (point.x - translation.x) / scale, y: (point.y - translation.y) / scale)
@@ -110,10 +150,11 @@ struct GraphCanvasView: View {
     @State private var labelSizes = LabelSizeCache()
     @State private var isAnimating = true
     @State private var lastDragTranslation: CGSize?
+    @State private var dragMode: DragMode?
     @State private var lastMagnification: CGFloat?
-    /// The canvas's origin in global space. Pointer locations are converted with this so they
+    /// The canvas's frame in global space. Pointer locations are converted with its origin so they
     /// line up with what's drawn, even though the canvas extends under the toolbar.
-    @State private var canvasOrigin: CGPoint = .zero
+    @State private var canvasFrame: CGRect = .zero
     #if os(macOS)
     @State private var scrollMonitor: Any?
     #endif
@@ -136,10 +177,16 @@ struct GraphCanvasView: View {
                     let visibleRect = visibleRect(in: size, safeArea: safeArea)
                     simulation.advance(to: timeline.date)
                     camera.update(to: timeline.date, fitting: simulation.boundingBox, in: visibleRect)
+                    let intro = camera.intro(at: timeline.date)
+                    // Fade in and scale around the center of the visible area while a new graph appears.
+                    context.opacity = intro.opacity
+                    context.translateBy(x: visibleRect.midX, y: visibleRect.midY)
+                    context.scaleBy(x: intro.scale, y: intro.scale)
+                    context.translateBy(x: -visibleRect.midX, y: -visibleRect.midY)
                     draw(in: &context)
                     stopAnimatingIfIdle()
                 }
-                .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { canvasOrigin = $0 }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { canvasFrame = $0 }
             }
             .ignoresSafeArea()
             .background(Color.graphBackground.ignoresSafeArea())
@@ -161,6 +208,8 @@ struct GraphCanvasView: View {
                     .padding(.bottom, 12)
             }
         }
+        .onChange(of: nodes) { reload() }
+        .onChange(of: relationships) { reload() }
         .onChange(of: obscuredInsets) { wake() }
         .onChange(of: selection) { wake() }
         #if os(macOS)
@@ -190,8 +239,16 @@ struct GraphCanvasView: View {
         isAnimating = true
     }
 
+    /// Lays out a new set of nodes and relationships and plays the intro animation.
+    private func reload() {
+        simulation.load(nodes: nodes, relationships: relationships)
+        labelSizes.sizes = [:]
+        camera.showNewGraph()
+        isAnimating = true
+    }
+
     private func stopAnimatingIfIdle() {
-        guard simulation.isSettled, camera.isConverged, isAnimating else { return }
+        guard simulation.isSettled, camera.isConverged, !camera.isPlayingIntro, isAnimating else { return }
         // Defer the state change; mutating state while rendering is not allowed.
         Task { @MainActor in isAnimating = false }
     }
@@ -274,18 +331,47 @@ struct GraphCanvasView: View {
 
     // MARK: - Gestures
 
+    private enum DragMode {
+        case pan
+        /// Dragging a node; `offset` keeps the point that was grabbed under the pointer.
+        case node(id: Int, offset: CGVector)
+    }
+
+    /// Drags a node when the drag starts on one, otherwise pans the camera.
     private var panGesture: some Gesture {
-        DragGesture(minimumDistance: 3)
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
-                let previous = lastDragTranslation ?? .zero
-                camera.pan(by: CGSize(
-                    width: value.translation.width - previous.width,
-                    height: value.translation.height - previous.height
-                ))
-                lastDragTranslation = value.translation
+                if dragMode == nil {
+                    let start = camera.toWorld(canvasPoint(fromGlobal: value.startLocation))
+                    if let id = nodeID(atWorld: start), let position = simulation.positions[id] {
+                        dragMode = .node(id: id, offset: CGVector(dx: position.x - start.x, dy: position.y - start.y))
+                        // The user is arranging the graph; stop re-framing it automatically.
+                        camera.isAutoFitting = false
+                    } else {
+                        dragMode = .pan
+                    }
+                }
+
+                switch dragMode {
+                case .node(let id, let offset):
+                    let world = camera.toWorld(canvasPoint(fromGlobal: value.location))
+                    let target = CGPoint(x: world.x + offset.dx, y: world.y + offset.dy)
+                    simulation.move(id, to: clampedToWindow(target))
+                case .pan, nil:
+                    let previous = lastDragTranslation ?? .zero
+                    camera.pan(by: CGSize(
+                        width: value.translation.width - previous.width,
+                        height: value.translation.height - previous.height
+                    ))
+                    lastDragTranslation = value.translation
+                }
                 wake()
             }
-            .onEnded { _ in lastDragTranslation = nil }
+            .onEnded { _ in
+                dragMode = nil
+                lastDragTranslation = nil
+                wake()
+            }
     }
 
     private var magnifyGesture: some Gesture {
@@ -310,7 +396,18 @@ struct GraphCanvasView: View {
     }
 
     private func canvasPoint(fromGlobal point: CGPoint) -> CGPoint {
-        CGPoint(x: point.x - canvasOrigin.x, y: point.y - canvasOrigin.y)
+        CGPoint(x: point.x - canvasFrame.minX, y: point.y - canvasFrame.minY)
+    }
+
+    /// Clamps a world point so a node centered there stays fully inside the window.
+    private func clampedToWindow(_ world: CGPoint) -> CGPoint {
+        let radius = nodeRadius * camera.scale
+        let screen = CGPoint(x: world.x * camera.scale + camera.translation.x, y: world.y * camera.scale + camera.translation.y)
+        let clamped = CGPoint(
+            x: min(max(screen.x, radius), max(canvasFrame.width - radius, radius)),
+            y: min(max(screen.y, radius), max(canvasFrame.height - radius, radius))
+        )
+        return camera.toWorld(clamped)
     }
 
     /// Finds the node or relationship under a point in canvas coordinates.
@@ -318,18 +415,8 @@ struct GraphCanvasView: View {
     private func hitTest(_ point: CGPoint) -> GraphSelection? {
         let world = camera.toWorld(point)
         let positions = simulation.positions
-        // Keep targets at least ~14pt on screen even when zoomed far out.
-        let nodeTarget = max(nodeRadius, 14 / camera.scale)
-
-        let nodeHit = nodes
-            .compactMap { node -> (id: Int, distance: CGFloat)? in
-                guard let position = positions[node.id] else { return nil }
-                let distance = hypot(position.x - world.x, position.y - world.y)
-                return distance <= nodeTarget ? (node.id, distance) : nil
-            }
-            .min { $0.distance < $1.distance }
-        if let nodeHit {
-            return .node(nodeHit.id)
+        if let id = nodeID(atWorld: world) {
+            return .node(id)
         }
 
         let slop = max(3, 6 / camera.scale)
@@ -363,6 +450,21 @@ struct GraphCanvasView: View {
             }
             .min { $0.distance < $1.distance }
         return relationshipHit.map { .relationship($0.id) }
+    }
+
+    /// The node closest to a world point, if the point is within its hit target.
+    private func nodeID(atWorld world: CGPoint) -> Int? {
+        let positions = simulation.positions
+        // Keep targets at least ~14pt on screen even when zoomed far out.
+        let nodeTarget = max(nodeRadius, 14 / camera.scale)
+        return nodes
+            .compactMap { node -> (id: Int, distance: CGFloat)? in
+                guard let position = positions[node.id] else { return nil }
+                let distance = hypot(position.x - world.x, position.y - world.y)
+                return distance <= nodeTarget ? (node.id, distance) : nil
+            }
+            .min { $0.distance < $1.distance }?
+            .id
     }
 
     // MARK: - Fit button
