@@ -109,9 +109,11 @@ struct GraphCanvasView: View {
     @State private var camera = GraphCamera()
     @State private var labelSizes = LabelSizeCache()
     @State private var isAnimating = true
-    @State private var selectionDate = Date.distantPast
     @State private var lastDragTranslation: CGSize?
     @State private var lastMagnification: CGFloat?
+    /// The canvas's origin in global space. Pointer locations are converted with this so they
+    /// line up with what's drawn, even though the canvas extends under the toolbar.
+    @State private var canvasOrigin: CGPoint = .zero
     #if os(macOS)
     @State private var scrollMonitor: Any?
     #endif
@@ -134,9 +136,10 @@ struct GraphCanvasView: View {
                     let visibleRect = visibleRect(in: size, safeArea: safeArea)
                     simulation.advance(to: timeline.date)
                     camera.update(to: timeline.date, fitting: simulation.boundingBox, in: visibleRect)
-                    draw(in: &context, date: timeline.date)
-                    stopAnimatingIfIdle(at: timeline.date)
+                    draw(in: &context)
+                    stopAnimatingIfIdle()
                 }
+                .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { canvasOrigin = $0 }
             }
             .ignoresSafeArea()
             .background(Color.graphBackground.ignoresSafeArea())
@@ -144,10 +147,10 @@ struct GraphCanvasView: View {
             .gesture(panGesture)
             .simultaneousGesture(magnifyGesture)
             .simultaneousGesture(tapGesture)
-            .onContinuousHover(coordinateSpace: .local) { phase in
+            .onContinuousHover(coordinateSpace: .global) { phase in
                 switch phase {
                 case .active(let location):
-                    camera.hoverLocation = location
+                    camera.hoverLocation = canvasPoint(fromGlobal: location)
                 case .ended:
                     camera.hoverLocation = nil
                 }
@@ -159,10 +162,7 @@ struct GraphCanvasView: View {
             }
         }
         .onChange(of: obscuredInsets) { wake() }
-        .onChange(of: selection) {
-            selectionDate = .now
-            wake()
-        }
+        .onChange(of: selection) { wake() }
         #if os(macOS)
         .onAppear(perform: installScrollMonitor)
         .onDisappear(perform: removeScrollMonitor)
@@ -190,16 +190,15 @@ struct GraphCanvasView: View {
         isAnimating = true
     }
 
-    private func stopAnimatingIfIdle(at date: Date) {
-        let pulseFinished = date.timeIntervalSince(selectionDate) > 1
-        guard simulation.isSettled, camera.isConverged, pulseFinished, isAnimating else { return }
+    private func stopAnimatingIfIdle() {
+        guard simulation.isSettled, camera.isConverged, isAnimating else { return }
         // Defer the state change; mutating state while rendering is not allowed.
         Task { @MainActor in isAnimating = false }
     }
 
     // MARK: - Drawing
 
-    private func draw(in context: inout GraphicsContext, date: Date) {
+    private func draw(in context: inout GraphicsContext) {
         let positions = simulation.positions
         context.translateBy(x: camera.translation.x, y: camera.translation.y)
         context.scaleBy(x: camera.scale, y: camera.scale)
@@ -215,18 +214,14 @@ struct GraphCanvasView: View {
         for node in nodes {
             guard let position = positions[node.id] else { continue }
             let isSelected = selection == .node(node.id)
-            let radius = nodeRadius * (isSelected ? 1.15 * pulse(at: date) : 1)
-            let rect = CGRect(x: position.x - radius, y: position.y - radius, width: radius * 2, height: radius * 2)
+            let rect = CGRect(x: position.x - nodeRadius, y: position.y - nodeRadius, width: nodeRadius * 2, height: nodeRadius * 2)
             let color = GraphPalette.color(for: node.labels.first ?? "")
 
-            if isSelected {
-                let halo = rect.insetBy(dx: -6, dy: -6)
-                context.fill(Path(ellipseIn: halo), with: .color(color.opacity(0.25)))
-            }
             context.fill(Path(ellipseIn: rect), with: .color(color))
+            // Selected nodes get the same accent highlight as selected relationships.
             context.stroke(
                 Path(ellipseIn: rect),
-                with: .color(isSelected ? .primary : color.mix(with: .black, by: 0.25)),
+                with: .color(isSelected ? .accentColor : color.mix(with: .black, by: 0.25)),
                 lineWidth: isSelected ? 2.5 : 1.5
             )
 
@@ -277,13 +272,6 @@ struct GraphCanvasView: View {
         labelContext.draw(label, at: EdgeGeometry.labelCenter, anchor: .center)
     }
 
-    /// A damped oscillation that makes a newly selected node "bounce".
-    private func pulse(at date: Date) -> CGFloat {
-        let t = date.timeIntervalSince(selectionDate)
-        guard t >= 0, t < 1 else { return 1 }
-        return 1 + 0.25 * exp(-5 * t) * sin(18 * t)
-    }
-
     // MARK: - Gestures
 
     private var panGesture: some Gesture {
@@ -312,53 +300,69 @@ struct GraphCanvasView: View {
     }
 
     private var tapGesture: some Gesture {
-        SpatialTapGesture()
+        SpatialTapGesture(coordinateSpace: .global)
             .onEnded { value in
-                let hit = hitTest(value.location)
+                let hit = hitTest(canvasPoint(fromGlobal: value.location))
                 withAnimation(.snappy) {
                     selection = hit
                 }
             }
     }
 
+    private func canvasPoint(fromGlobal point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x - canvasOrigin.x, y: point.y - canvasOrigin.y)
+    }
+
     /// Finds the node or relationship under a point in canvas coordinates.
-    /// Nodes (including their name text) win over relationships.
+    /// Nodes win over relationships; among candidates the closest one wins.
     private func hitTest(_ point: CGPoint) -> GraphSelection? {
         let world = camera.toWorld(point)
         let positions = simulation.positions
         // Keep targets at least ~14pt on screen even when zoomed far out.
-        let minimumTarget = 14 / camera.scale
+        let nodeTarget = max(nodeRadius, 14 / camera.scale)
 
-        let node = nodes.last { node in
-            guard let position = positions[node.id] else { return false }
-            return hypot(position.x - world.x, position.y - world.y) <= max(nodeRadius, minimumTarget)
-        }
-        if let node {
-            return .node(node.id)
+        let nodeHit = nodes
+            .compactMap { node -> (id: Int, distance: CGFloat)? in
+                guard let position = positions[node.id] else { return nil }
+                let distance = hypot(position.x - world.x, position.y - world.y)
+                return distance <= nodeTarget ? (node.id, distance) : nil
+            }
+            .min { $0.distance < $1.distance }
+        if let nodeHit {
+            return .node(nodeHit.id)
         }
 
         let slop = max(3, 6 / camera.scale)
-        let relationship = relationships.last { relationship in
-            guard let start = positions[relationship.startNodeID],
-                  let end = positions[relationship.endNodeID],
-                  let edge = EdgeGeometry(from: start, to: end, nodeRadius: nodeRadius) else { return false }
+        let relationshipHit = relationships
+            .compactMap { relationship -> (id: Int, distance: CGFloat)? in
+                guard let start = positions[relationship.startNodeID],
+                      let end = positions[relationship.endNodeID],
+                      let edge = EdgeGeometry(from: start, to: end, nodeRadius: nodeRadius) else { return nil }
 
-            // Convert into the label's rotated coordinate space.
-            let local = edge.toLabelSpace(world)
-            let size = labelSizes.sizes[relationship.id] ?? CGSize(width: 40, height: 9)
-            let labelRect = CGRect(
-                x: EdgeGeometry.labelCenter.x - size.width / 2,
-                y: EdgeGeometry.labelCenter.y - size.height / 2,
-                width: size.width,
-                height: size.height
-            ).insetBy(dx: -slop, dy: -slop)
-            if labelRect.contains(local) { return true }
+                // Convert into the label's rotated coordinate space.
+                let local = edge.toLabelSpace(world)
+                let halfLength = hypot(edge.tip.x - edge.from.x, edge.tip.y - edge.from.y) / 2
+                // Distance to the line segment.
+                let lineDistance = hypot(max(abs(local.x) - halfLength, 0), local.y)
 
-            // Also accept taps on the line itself.
-            let halfLength = hypot(edge.tip.x - edge.from.x, edge.tip.y - edge.from.y) / 2
-            return abs(local.x) <= halfLength && abs(local.y) <= slop
-        }
-        return relationship.map { .relationship($0.id) }
+                let size = labelSizes.sizes[relationship.id] ?? CGSize(width: 40, height: 9)
+                let labelRect = CGRect(
+                    x: EdgeGeometry.labelCenter.x - size.width / 2,
+                    y: EdgeGeometry.labelCenter.y - size.height / 2,
+                    width: size.width,
+                    height: size.height
+                )
+                // Distance to the label (zero when inside it).
+                let labelDistance = hypot(
+                    max(labelRect.minX - local.x, local.x - labelRect.maxX, 0),
+                    max(labelRect.minY - local.y, local.y - labelRect.maxY, 0)
+                )
+
+                let distance = min(lineDistance, labelDistance)
+                return distance <= slop ? (relationship.id, distance) : nil
+            }
+            .min { $0.distance < $1.distance }
+        return relationshipHit.map { .relationship($0.id) }
     }
 
     // MARK: - Fit button
