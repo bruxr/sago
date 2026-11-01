@@ -11,6 +11,8 @@
     ],
   },
   "files": [
+    { "path": "AGENTS.md", "target-membership": [ "sago/resources" ] },
+    { "path": "CLAUDE.md", "target-membership": [ "sago/resources" ] },
     { "kind": "folder", "path": "sago", "target-membership": [ "sago" ] },
     { "kind": "folder", "path": "sagoTests", "target-membership": [ "sagoTests" ] },
     { "kind": "folder", "path": "sagoUITests", "target-membership": [ "sagoUITests" ] },
