@@ -208,7 +208,8 @@ struct GraphCanvasView: View {
                     .padding(.bottom, 12)
             }
         }
-        .onChange(of: nodes) { reload() }
+        // Only a new set of nodes needs a fresh layout; label edits just redraw.
+        .onChange(of: nodes.map(\.id)) { reload() }
         .onChange(of: relationships) { reload() }
         .onChange(of: obscuredInsets) { wake() }
         .onChange(of: selection) { wake() }

@@ -14,7 +14,7 @@ struct DatabaseView: View {
 
     private let connection = PlaceholderData.connection
     private let recentQueries = PlaceholderData.recentQueries
-    private let nodes = PlaceholderData.nodes
+    @State private var nodes = PlaceholderData.nodes
     private let relationships = PlaceholderData.relationships
 
     private let leftPanelWidth: CGFloat = 260
@@ -78,7 +78,7 @@ struct DatabaseView: View {
 
                 if showRightPanel {
                     FloatingPanel(width: rightPanelWidth) {
-                        InspectorView(nodes: nodes, relationships: relationships, selection: selection)
+                        InspectorView(nodes: $nodes, relationships: relationships, selection: selection)
                     }
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                 }

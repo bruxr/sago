@@ -31,8 +31,8 @@ enum PlaceholderData {
         return Calendar(identifier: .gregorian).date(from: components) ?? .now
     }
 
-    private static func person(_ id: Int, uuid: String, name: String, born: Int, updated: Date) -> GraphNode {
-        GraphNode(id: id, labels: ["Person"], properties: [
+    private static func person(_ id: Int, uuid: String, name: String, born: Int, updated: Date, labels: [String] = ["Person"]) -> GraphNode {
+        GraphNode(id: id, labels: labels, properties: [
             "id": .string(uuid),
             "name": .string(name),
             "born": .int(born),
@@ -40,8 +40,8 @@ enum PlaceholderData {
         ])
     }
 
-    private static func movie(_ id: Int, uuid: String, title: String, released: Int, tagline: String, genres: [String]) -> GraphNode {
-        GraphNode(id: id, labels: ["Movie"], properties: [
+    private static func movie(_ id: Int, uuid: String, title: String, released: Int, tagline: String, genres: [String], labels: [String] = ["Movie"]) -> GraphNode {
+        GraphNode(id: id, labels: labels, properties: [
             "id": .string(uuid),
             "title": .string(title),
             "released": .int(released),
@@ -52,18 +52,26 @@ enum PlaceholderData {
     }
 
     static let nodes: [GraphNode] = [
-        movie(0, uuid: "m-7f3a", title: "The Matrix", released: 1999, tagline: "Welcome to the Real World", genres: ["Sci-Fi", "Action"]),
+        movie(0, uuid: "m-7f3a", title: "The Matrix", released: 1999, tagline: "Welcome to the Real World", genres: ["Sci-Fi", "Action"],
+              labels: ["Movie", "Franchise"]),
         movie(1, uuid: "m-1b9c", title: "The Matrix Reloaded", released: 2003, tagline: "Free your mind", genres: ["Sci-Fi", "Action"]),
         movie(2, uuid: "m-44d0", title: "John Wick", released: 2014, tagline: "Don't set him off", genres: ["Action", "Thriller"]),
-        movie(3, uuid: "m-a2e1", title: "Cloud Atlas", released: 2012, tagline: "Everything is connected", genres: ["Drama", "Sci-Fi"]),
-        person(10, uuid: "p-0001", name: "Keanu Reeves", born: 1964, updated: date(2025, 6, 2, 14, 5)),
-        person(11, uuid: "p-0002", name: "Carrie-Anne Moss", born: 1967, updated: date(2025, 1, 20, 8, 45)),
+        movie(3, uuid: "m-a2e1", title: "Cloud Atlas", released: 2012, tagline: "Everything is connected", genres: ["Drama", "Sci-Fi"],
+              labels: ["Movie", "Adaptation", "Ensemble"]),
+        person(10, uuid: "p-0001", name: "Keanu Reeves", born: 1964, updated: date(2025, 6, 2, 14, 5),
+               labels: ["Person", "Actor", "Producer"]),
+        person(11, uuid: "p-0002", name: "Carrie-Anne Moss", born: 1967, updated: date(2025, 1, 20, 8, 45),
+               labels: ["Person", "Actor"]),
         person(12, uuid: "p-0003", name: "Laurence Fishburne", born: 1961, updated: date(2024, 11, 11, 17, 0)),
         person(13, uuid: "p-0004", name: "Hugo Weaving", born: 1960, updated: date(2024, 9, 3, 10, 15)),
-        person(14, uuid: "p-0005", name: "Lana Wachowski", born: 1965, updated: date(2025, 2, 28, 12, 0)),
-        person(15, uuid: "p-0006", name: "Lilly Wachowski", born: 1967, updated: date(2025, 2, 28, 12, 1)),
-        person(16, uuid: "p-0007", name: "Tom Hanks", born: 1956, updated: date(2025, 7, 19, 22, 30)),
-        person(17, uuid: "p-0008", name: "Chad Stahelski", born: 1968, updated: date(2024, 12, 24, 6, 50)),
+        person(14, uuid: "p-0005", name: "Lana Wachowski", born: 1965, updated: date(2025, 2, 28, 12, 0),
+               labels: ["Person", "Director", "Writer", "Producer", "Screenwriter"]),
+        person(15, uuid: "p-0006", name: "Lilly Wachowski", born: 1967, updated: date(2025, 2, 28, 12, 1),
+               labels: ["Person", "Director", "Writer", "Producer"]),
+        person(16, uuid: "p-0007", name: "Tom Hanks", born: 1956, updated: date(2025, 7, 19, 22, 30),
+               labels: ["Person", "Actor", "Producer", "Director"]),
+        person(17, uuid: "p-0008", name: "Chad Stahelski", born: 1968, updated: date(2024, 12, 24, 6, 50),
+               labels: ["Person", "Director", "Stuntman"]),
     ]
 
     static let relationships: [GraphRelationship] = {

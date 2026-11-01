@@ -7,7 +7,7 @@ import SwiftUI
 
 /// Right panel showing details about the current graph or the selected node / relationship.
 struct InspectorView: View {
-    let nodes: [GraphNode]
+    @Binding var nodes: [GraphNode]
     let relationships: [GraphRelationship]
     let selection: GraphSelection?
 
@@ -16,8 +16,8 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 14) {
                 switch selection {
                 case .node(let id):
-                    if let node = nodes.first(where: { $0.id == id }) {
-                        nodeDetails(node)
+                    if let index = nodes.firstIndex(where: { $0.id == id }) {
+                        nodeDetails(index)
                     }
                 case .relationship(let id):
                     if let relationship = relationships.first(where: { $0.id == id }) {
@@ -29,8 +29,9 @@ struct InspectorView: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Swap content instantly. Fading text fields in/out over the glass panel renders them black mid-transition.
+            .transaction(value: selection) { $0.animation = nil }
         }
-        .animation(.snappy, value: selection)
     }
 
     private var summary: some View {
@@ -58,13 +59,12 @@ struct InspectorView: View {
         .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
     }
 
-    private func nodeDetails(_ node: GraphNode) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 6) {
-                ForEach(node.labels, id: \.self) { label in
-                    tag(label, color: GraphPalette.color(for: label))
-                }
-            }
+    private func nodeDetails(_ index: Int) -> some View {
+        let node = nodes[index]
+        return VStack(alignment: .leading, spacing: 14) {
+            LabelTagsView(labels: $nodes[index].labels)
+                // Fresh tag selection for each node.
+                .id(node.id)
             Text(node.caption)
                 .font(.headline)
 
@@ -91,11 +91,11 @@ struct InspectorView: View {
 
     private func tag(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.caption)
-            .fontWeight(.semibold)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.25), in: .capsule)
+            .font(.headline)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            // Same glass capsule as node labels; not interactive since relationship types can't be edited.
+            .glassEffect(.regular.tint(color.opacity(0.5)), in: .capsule)
     }
 
     private func fieldRows(id: Int, properties: [String: PropertyValue]) -> some View {
@@ -118,17 +118,68 @@ struct InspectorView: View {
     }
 }
 
+/// Lays subviews out left to right, wrapping to a new line when the row is full.
+struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = frames(for: subviews, maxWidth: proposal.width ?? .infinity)
+        let width = frames.map(\.maxX).max() ?? 0
+        let height = frames.map(\.maxY).max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = frames(for: subviews, maxWidth: bounds.width)
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func frames(for subviews: Subviews, maxWidth: CGFloat) -> [CGRect] {
+        var frames: [CGRect] = []
+        var origin = CGPoint.zero
+        var rowHeight: CGFloat = 0
+        var rowStart = 0
+
+        // Vertically centers the items of the finished row within its height.
+        func centerRow() {
+            for index in rowStart..<frames.count {
+                frames[index].origin.y += (rowHeight - frames[index].height) / 2
+            }
+        }
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if origin.x > 0, origin.x + size.width > maxWidth {
+                centerRow()
+                origin = CGPoint(x: 0, y: origin.y + rowHeight + spacing)
+                rowHeight = 0
+                rowStart = frames.count
+            }
+            frames.append(CGRect(origin: origin, size: size))
+            origin.x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        centerRow()
+        return frames
+    }
+}
+
 #Preview("Summary") {
-    InspectorView(nodes: PlaceholderData.nodes, relationships: PlaceholderData.relationships, selection: nil)
+    @Previewable @State var nodes = PlaceholderData.nodes
+    InspectorView(nodes: $nodes, relationships: PlaceholderData.relationships, selection: nil)
         .frame(width: 300, height: 500)
 }
 
 #Preview("Node") {
-    InspectorView(nodes: PlaceholderData.nodes, relationships: PlaceholderData.relationships, selection: .node(10))
+    @Previewable @State var nodes = PlaceholderData.nodes
+    InspectorView(nodes: $nodes, relationships: PlaceholderData.relationships, selection: .node(10))
         .frame(width: 300, height: 600)
 }
 
 #Preview("Relationship") {
-    InspectorView(nodes: PlaceholderData.nodes, relationships: PlaceholderData.relationships, selection: .relationship(100))
+    @Previewable @State var nodes = PlaceholderData.nodes
+    InspectorView(nodes: $nodes, relationships: PlaceholderData.relationships, selection: .relationship(100))
         .frame(width: 300, height: 400)
 }
