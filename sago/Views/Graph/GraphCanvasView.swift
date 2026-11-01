@@ -112,7 +112,7 @@ final class GraphCamera {
             y: visibleRect.midY - bounds.midY * targetScale
         )
 
-        guard hasPlacedInitially, let lastDate else {
+        guard hasPlacedInitially else {
             scale = targetScale
             translation = targetTranslation
             hasPlacedInitially = true
@@ -121,7 +121,8 @@ final class GraphCamera {
         }
 
         // Exponential smoothing gives a soft, spring-like follow.
-        let dt = min(date.timeIntervalSince(lastDate), 0.1)
+        // Right after waking there's no previous frame, so hold still for one frame instead of snapping.
+        let dt = lastDate.map { min(date.timeIntervalSince($0), 0.1) } ?? 0
         let t = 1 - exp(-dt * 7)
         scale += (targetScale - scale) * t
         translation.x += (targetTranslation.x - translation.x) * t
