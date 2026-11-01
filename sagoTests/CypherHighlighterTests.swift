@@ -30,6 +30,30 @@ struct CypherHighlighterTests {
         #expect(tokens(#"RETURN "abc"#).map(\.0) == [.keyword, .string])
     }
 
+    @Test func classifiesQueryEffect() {
+        #expect(CypherHighlighter.effect(of: "MATCH (n) RETURN n") == .read)
+        #expect(CypherHighlighter.effect(of: "CREATE (n:Person)") == .write)
+        #expect(CypherHighlighter.effect(of: "match (n) set n.x = 1") == .write)
+        #expect(CypherHighlighter.effect(of: "MERGE (n:Person {name: 'A'})") == .write)
+        #expect(CypherHighlighter.effect(of: "MATCH (n) DETACH DELETE n") == .delete)
+        #expect(CypherHighlighter.effect(of: "MATCH (n) REMOVE n.x") == .delete)
+        #expect(CypherHighlighter.effect(of: "CREATE (a) WITH a MATCH (b) DELETE b") == .delete)
+    }
+
+    @Test func classifiesProcedureCalls() {
+        #expect(CypherHighlighter.effect(of: "CALL db.labels()") == .procedure)
+        #expect(CypherHighlighter.effect(of: "call apoc.periodic.iterate('a', 'b', {})") == .procedure)
+        #expect(CypherHighlighter.effect(of: "CALL db.labels() YIELD label CREATE (:Tag {name: label})") == .procedure)
+        #expect(CypherHighlighter.effect(of: "CALL apoc.x() YIELD n DETACH DELETE n") == .delete)
+        // Subqueries aren't procedure calls.
+        #expect(CypherHighlighter.effect(of: "CALL { MATCH (n) RETURN n } RETURN n") == .read)
+        #expect(CypherHighlighter.effect(of: "MATCH (a) CALL (a) { CREATE (b) } RETURN a") == .write)
+    }
+
+    @Test func ignoresEffectKeywordsInsideStringsAndComments() {
+        #expect(CypherHighlighter.effect(of: "RETURN 'CREATE' // DELETE") == .read)
+    }
+
     @Test func recolorsAttributedStringWithoutChangingText() {
         var text = AttributedString("MATCH (n) RETURN n")
         CypherHighlighter.highlight(&text)

@@ -14,6 +14,8 @@ struct RecentQueriesView: View {
     let onRun: (String) -> Void
 
     @Query private var records: [QueryRecord]
+    /// A write or delete query awaiting confirmation before it runs.
+    @State private var pendingQuery: PendingQuery?
 
     init(server: String, runningQuery: String?, onRun: @escaping (String) -> Void) {
         self.runningQuery = runningQuery
@@ -65,7 +67,12 @@ struct RecentQueriesView: View {
                 ForEach(visibleRecords) { record in
                     Button {
                         guard runningQuery == nil else { return }
-                        onRun(record.cypher)
+                        let effect = CypherHighlighter.effect(of: record.cypher)
+                        if effect == .read {
+                            onRun(record.cypher)
+                        } else {
+                            pendingQuery = PendingQuery(cypher: record.cypher, effect: effect)
+                        }
                     } label: {
                         RecentQueryRow(cypher: record.cypher, status: record.status, date: record.date)
                     }
@@ -78,6 +85,40 @@ struct RecentQueriesView: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
+        }
+        .alert(
+            pendingQuery?.title ?? "",
+            isPresented: Binding(get: { pendingQuery != nil }, set: { if !$0 { pendingQuery = nil } }),
+            presenting: pendingQuery
+        ) { query in
+            Button("Run Query", role: query.effect == .write ? nil : .destructive) {
+                onRun(query.cypher)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { query in
+            Text(query.message)
+        }
+    }
+}
+
+/// A query that changes data, held while the user confirms running it.
+private struct PendingQuery {
+    let cypher: String
+    let effect: CypherHighlighter.Effect
+
+    var title: String {
+        switch effect {
+        case .delete: "Run Destructive Query?"
+        case .procedure: "Call Stored Procedure?"
+        case .write, .read: "Run Write Query?"
+        }
+    }
+
+    var message: String {
+        switch effect {
+        case .delete: "This query will delete or remove data. This can't be undone."
+        case .procedure: "This query will call a stored procedure, which might cause data loss. Continue?"
+        case .write, .read: "This query will create new nodes or relationships, or update existing ones."
         }
     }
 }

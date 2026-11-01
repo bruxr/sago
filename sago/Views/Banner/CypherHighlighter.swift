@@ -54,6 +54,33 @@ enum CypherHighlighter {
         }
     }
 
+    /// What running a query would do to the data.
+    enum Effect: Equatable {
+        /// `procedure` calls a stored procedure, whose effect can't be told from the query.
+        case read, write, procedure, delete
+    }
+
+    private static let deleteKeywords: Set<String> = ["DELETE", "DETACH", "REMOVE", "DROP"]
+    private static let writeKeywords: Set<String> = ["CREATE", "MERGE", "SET"]
+
+    /// Whether `cypher` reads, writes, calls a procedure or deletes, judged by its keywords.
+    /// Deleting wins over a procedure call, which wins over writing.
+    static func effect(of cypher: String) -> Effect {
+        let ns = cypher as NSString
+        let keywords = tokens(in: cypher).filter { $0.token == .keyword }
+        let words = Set(keywords.map { ns.substring(with: $0.range).uppercased() })
+        if !words.isDisjoint(with: deleteKeywords) { return .delete }
+        // `CALL name(...)` is a procedure; `CALL {` and `CALL (x) {` are subqueries.
+        let callsProcedure = keywords.contains { keyword in
+            guard ns.substring(with: keyword.range).uppercased() == "CALL" else { return false }
+            let next = ns.substring(from: NSMaxRange(keyword.range)).first { !$0.isWhitespace }
+            return next.map { $0.isLetter || $0 == "_" || $0 == "`" } ?? false
+        }
+        if callsProcedure { return .procedure }
+        if !words.isDisjoint(with: writeKeywords) { return .write }
+        return .read
+    }
+
     static func color(for token: Token) -> Color {
         switch token {
         case .comment: .secondary
